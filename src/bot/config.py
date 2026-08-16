@@ -46,6 +46,12 @@ class Settings(BaseSettings):
     history_hours: int = 6
     history_points: int = 10
 
+    # Heartbeat monitor URL (Better Stack / UptimeRobot / Healthchecks.io). The bot
+    # pings it while it is alive; the monitor alerts when the pings stop. Empty
+    # disables the heartbeat.
+    heartbeat_url: str = ""
+    heartbeat_interval_seconds: int = 60
+
     log_level: str = "INFO"
 
     @field_validator("admin_user_ids", "allowed_user_ids", mode="before")

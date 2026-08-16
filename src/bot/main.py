@@ -1,11 +1,14 @@
 import logging
+from collections.abc import Iterable
+from datetime import UTC, datetime
 
 from aiohttp import web
-from telegram import Update
+from telegram import Bot, Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 
 from src.bot.config import Settings
 from src.bot.handlers import BotHandlers
+from src.bot.monitoring import Heartbeat
 from src.bot.server import run_server
 from src.bot.storage.locations import LocationStore
 from src.bot.storage.users import UserStore
@@ -21,6 +24,18 @@ def setup_logging(level: str) -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("telegram").setLevel(logging.WARNING)
     logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
+
+
+async def notify_admins(bot: Bot, admin_user_ids: Iterable[int], text: str) -> None:
+    for admin_id in admin_user_ids:
+        try:
+            await bot.send_message(chat_id=admin_id, text=text)
+        except Exception:
+            logger.warning("Could not send %r to admin %d", text, admin_id)
+
+
+def _now() -> str:
+    return datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S UTC")
 
 
 def main() -> None:
@@ -55,6 +70,10 @@ def main() -> None:
     )
 
     server_runner: web.AppRunner | None = None
+    heartbeat = Heartbeat(
+        settings.heartbeat_url,
+        settings.heartbeat_interval_seconds,
+    )
 
     async def post_init(app: Application) -> None:  # type: ignore[type-arg]
         nonlocal server_runner
@@ -72,8 +91,18 @@ def main() -> None:
             len(settings.admin_user_ids),
             settings.retention_days,
         )
+        heartbeat.start()
+        await notify_admins(
+            app.bot, settings.admin_user_ids, f"\U0001f7e2 Bot started at {_now()}"
+        )
 
     async def post_shutdown(app: Application) -> None:  # type: ignore[type-arg]
+        # A clean shutdown (redeploy, SIGTERM) is announced here; a crash is caught
+        # by the heartbeat monitor instead.
+        await notify_admins(
+            app.bot, settings.admin_user_ids, f"\U0001f534 Bot shutting down at {_now()}"
+        )
+        await heartbeat.stop()
         if server_runner is not None:
             await server_runner.cleanup()
         await locations.close()

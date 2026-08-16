@@ -42,6 +42,19 @@ Usernames only work for people the bot has already seen (Telegram does not let b
 look up arbitrary usernames); otherwise use the numeric user id shown by `/users` or
 in the admin notification.
 
+## Knowing when the bot is down
+
+Admins get a DM on startup (🟢) and on a clean shutdown (🔴), which covers
+redeploys but not a crash — a dead process cannot report itself. For that the bot
+pings a heartbeat monitor every `HEARTBEAT_INTERVAL_SECONDS`; when the pings stop,
+the monitor alerts you. Create a heartbeat ("cron"/"push") monitor at
+[Better Stack](https://betterstack.com/uptime), UptimeRobot or Healthchecks.io, set
+its grace period to a few minutes, and put its ping URL in `HEARTBEAT_URL`.
+
+`GET /health` stays useful as a second, independent check: point the same provider's
+HTTP monitor (or Railway's healthcheck) at `https://<your-domain>/health` to catch a
+process that is alive but no longer serving.
+
 ## Accuracy handling
 
 Tasker reports GPS accuracy in metres (`%gl_coordinates_accuracy`). The service:
@@ -85,6 +98,8 @@ cp .env.example .env
 | `MAX_ACCURACY_M` | Reject points with worse accuracy (default `500`) |
 | `HISTORY_HOURS` / `HISTORY_POINTS` | Size of the track `/where` returns (default `6` h / `10` points) |
 | `PORT` | HTTP port (default `8080`; Railway sets this automatically) |
+| `HEARTBEAT_URL` | Heartbeat monitor URL pinged while the bot is alive (empty = disabled) |
+| `HEARTBEAT_INTERVAL_SECONDS` | How often to ping (default `60`) |
 | `LOG_LEVEL` | Logging level (default `INFO`) |
 
 ### Run
