@@ -1,7 +1,7 @@
 import hmac
 import logging
 
-from telegram import Update
+from telegram import KeyboardButton, ReplyKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from src.bot.history import format_history
@@ -10,9 +10,12 @@ from src.bot.storage.users import UserStore
 
 logger = logging.getLogger(__name__)
 
+WHERE_BUTTON_TEXT = "\U0001f4cd Where"
+WHERE_KEYBOARD = ReplyKeyboardMarkup([[KeyboardButton(WHERE_BUTTON_TEXT)]], resize_keyboard=True)
+
 HELP_TEXT = (
     "This bot reports where I am, based on points my phone sends automatically.\n\n"
-    "/where — my recent locations\n"
+    f"/where — my recent locations (or tap {WHERE_BUTTON_TEXT})\n"
     "/help — this message"
 )
 
@@ -66,7 +69,7 @@ class BotHandlers:
         password = " ".join(context.args or []).strip()
         await self._notify_admins(context, f"\U0001f44b {_user_label(user)} sent /start.")
         if await self._is_authorized(user.id):
-            await message.reply_text(HELP_TEXT)
+            await message.reply_text(HELP_TEXT, reply_markup=WHERE_KEYBOARD)
             return
         if not password:
             await message.reply_text(await self._locked_text(user.id))
@@ -80,17 +83,21 @@ class BotHandlers:
             return
         if await self._is_blocked(user.id):
             return
-        if await self._is_authorized(user.id):
-            await message.reply_text(HELP_TEXT)
+        text = message.text.strip()
+        if text == WHERE_BUTTON_TEXT and await self._is_authorized(user.id):
+            await self.where(update, context)
             return
-        await self._try_password(update, context, message.text.strip())
+        if await self._is_authorized(user.id):
+            await message.reply_text(HELP_TEXT, reply_markup=WHERE_KEYBOARD)
+            return
+        await self._try_password(update, context, text)
 
     async def help_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if update.message is None:
             return
         if not await self._guard(update):
             return
-        await update.message.reply_text(HELP_TEXT)
+        await update.message.reply_text(HELP_TEXT, reply_markup=WHERE_KEYBOARD)
 
     async def where(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         message, user = update.message, update.effective_user
@@ -227,7 +234,7 @@ class BotHandlers:
             return
 
         await self._users.authorize(user.id, user.username or "")
-        await message.reply_text(UNLOCKED_TEXT)
+        await message.reply_text(UNLOCKED_TEXT, reply_markup=WHERE_KEYBOARD)
         await self._notify_admins(
             context, f"\U0001f513 {_user_label(user)} unlocked the bot with the password."
         )

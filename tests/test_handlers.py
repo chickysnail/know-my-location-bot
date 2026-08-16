@@ -12,6 +12,7 @@ from src.bot.handlers import (
     LOCKOUT_TEXT,
     MAX_PASSWORD_ATTEMPTS,
     UNLOCKED_TEXT,
+    WHERE_BUTTON_TEXT,
     WRONG_PASSWORD_TEXT,
     BotHandlers,
 )
@@ -161,6 +162,21 @@ async def test_where_after_unlock_reports_track(
     assert "\u00b125 m" in text
     assert "https://www.google.com/maps/dir/" in text
     assert "asked for my location" in context.bot.send_message.await_args.kwargs["text"]
+
+
+async def test_where_button_reports_track(
+    handlers: BotHandlers, stores: tuple[LocationStore, UserStore]
+) -> None:
+    locations, users = stores
+    await locations.insert(2.0, 2.0, "2026/01/02 02:00", 25.0)
+    await users.authorize(STRANGER_ID, "bob")
+
+    update = make_update(STRANGER_ID, "bob", text=WHERE_BUTTON_TEXT)
+    await handlers.handle_password(update, make_context())
+
+    text = replies(update)[0]
+    assert "https://maps.google.com/?q=2.0,2.0" in text
+    assert HELP_TEXT not in replies(update)
 
 
 async def test_blocked_user_is_ignored(

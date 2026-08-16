@@ -179,6 +179,6 @@ On failure the response body says why, and the reason is logged by the service:
 | Command | Description |
 | --- | --- |
 | `/start <password>` | Unlock the bot |
-| `/where` | Recent locations plus a route link |
+| `/where` | Recent locations plus a route link (also available as a 📍 Where button) |
 | `/help` | Usage information |
 | `/users`, `/block`, `/unblock` | Admin only |
