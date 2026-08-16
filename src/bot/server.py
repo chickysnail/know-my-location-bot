@@ -26,7 +26,23 @@ def parse_coordinates(raw: object) -> tuple[float, float]:
         raise CoordinateError("coordinates must be numeric") from exc
 
 
-def create_app(store: LocationStore, ingest_token: str) -> web.Application:
+def parse_accuracy(raw: object) -> float | None:
+    """Parse Tasker's `%gl_coordinates_accuracy` (metres); None when absent."""
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return None
+    try:
+        accuracy = float(str(raw).strip())
+    except ValueError:
+        logger.warning("Ignoring unparsable accuracy value")
+        return None
+    return accuracy if accuracy >= 0 else None
+
+
+def create_app(
+    store: LocationStore,
+    ingest_token: str,
+    max_accuracy_m: float = 500.0,
+) -> web.Application:
     async def health(request: web.Request) -> web.Response:
         return web.Response(text="ok")
 
@@ -47,8 +63,19 @@ def create_app(store: LocationStore, ingest_token: str) -> web.Application:
         except CoordinateError as exc:
             return web.json_response({"error": str(exc)}, status=400)
 
+        accuracy = parse_accuracy(payload.get("accuracy"))
+        if accuracy is not None and accuracy > max_accuracy_m:
+            # A fix this vague would drag the track across town.
+            logger.info("Discarded point with accuracy %.0f m", accuracy)
+            return web.json_response({"status": "discarded", "reason": "inaccurate"})
+
         recorded_at = payload.get("time")
-        await store.insert(lat, lon, str(recorded_at) if recorded_at is not None else None)
+        await store.insert(
+            lat,
+            lon,
+            str(recorded_at) if recorded_at is not None else None,
+            accuracy,
+        )
         return web.json_response({"status": "ok"})
 
     app = web.Application()
@@ -57,9 +84,14 @@ def create_app(store: LocationStore, ingest_token: str) -> web.Application:
     return app
 
 
-async def run_server(store: LocationStore, ingest_token: str, port: int) -> web.AppRunner:
+async def run_server(
+    store: LocationStore,
+    ingest_token: str,
+    port: int,
+    max_accuracy_m: float = 500.0,
+) -> web.AppRunner:
     """Start the ingest HTTP server and return its runner for cleanup."""
-    runner = web.AppRunner(create_app(store, ingest_token))
+    runner = web.AppRunner(create_app(store, ingest_token, max_accuracy_m))
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
