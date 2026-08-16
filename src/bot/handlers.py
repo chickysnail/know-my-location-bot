@@ -1,3 +1,4 @@
+import hmac
 import logging
 
 from telegram import Update
@@ -18,10 +19,20 @@ HELP_TEXT = (
 LOCKED_TEXT = "This bot is password protected. Send: /start <password>"
 WRONG_PASSWORD_TEXT = "Wrong password."
 UNLOCKED_TEXT = "Access granted. Send /where to see my recent locations."
+LOCKOUT_TEXT = (
+    "Too many wrong password attempts. Contact the owner of this bot directly "
+    "to be given access."
+)
 ADMIN_ONLY_TEXT = "Admins only."
 USAGE_BLOCK_TEXT = "Usage: /block <user_id|@username>"
 USAGE_UNBLOCK_TEXT = "Usage: /unblock <user_id|@username>"
 NO_USERS_TEXT = "Nobody has unlocked the bot yet."
+
+# Wrong password attempts a user gets before they have to ask the owner directly.
+MAX_PASSWORD_ATTEMPTS = 5
+
+# Attempted passwords are relayed to admins; keep the message a sane size.
+ATTEMPT_PREVIEW_LIMIT = 200
 
 
 class BotHandlers:
@@ -53,11 +64,12 @@ class BotHandlers:
             return
 
         password = " ".join(context.args or []).strip()
+        await self._notify_admins(context, f"\U0001f44b {_user_label(user)} sent /start.")
         if await self._is_authorized(user.id):
             await message.reply_text(HELP_TEXT)
             return
         if not password:
-            await message.reply_text(LOCKED_TEXT)
+            await message.reply_text(await self._locked_text(user.id))
             return
         await self._try_password(update, context, password)
 
@@ -123,9 +135,12 @@ class BotHandlers:
             return
         lines = []
         for u in users:
-            marker = "\U0001f6ab" if u.blocked else "\u2705"
+            marker = "\U0001f6ab" if u.blocked else "\u2705" if u.authorized else "\u2753"
             last = u.last_request_at or "never"
-            lines.append(f"{marker} {u.label} — {u.request_count} request(s), last {last}")
+            attempts = f", {u.failed_attempts} wrong password(s)" if u.failed_attempts else ""
+            lines.append(
+                f"{marker} {u.label} — {u.request_count} request(s), last {last}{attempts}"
+            )
         await message.reply_text("\n".join(lines))
 
     async def _set_blocked(
@@ -138,25 +153,50 @@ class BotHandlers:
         message = update.message
         if message is None or not await self._require_admin(update):
             return
+        user_id = await self._resolve_target(update, context, usage)
+        if user_id is None:
+            return
+
+        if blocked:
+            await self._users.set_blocked(user_id, True)
+            await message.reply_text(f"Blocked {user_id}.")
+            return
+
+        # Unblocking is how an admin hands out access: it also clears a lockout.
+        known = await self._users.get(user_id)
+        await self._users.authorize(user_id, known.username if known else "")
+        await message.reply_text(f"Unblocked {user_id}, they now have access.")
+        try:
+            await context.bot.send_message(chat_id=user_id, text=UNLOCKED_TEXT)
+        except Exception:
+            logger.info("Could not tell %d about the granted access", user_id)
+
+    async def _resolve_target(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        usage: str,
+    ) -> int | None:
+        """Turn the command's argument into a user id, replying when it cannot."""
+        message = update.message
+        if message is None:
+            return None
         args = context.args or []
         if not args:
             await message.reply_text(usage)
-            return
+            return None
 
         target = args[0]
-        user_id = int(target) if target.lstrip("-").isdigit() else None
-        if user_id is None:
-            known = await self._users.find_by_username(target)
-            if known is None:
-                await message.reply_text(
-                    f"Unknown user {target}. Only users who unlocked the bot can be "
-                    "referenced by username; use their numeric id otherwise."
-                )
-                return
-            user_id = known.user_id
-
-        await self._users.set_blocked(user_id, blocked)
-        await message.reply_text(f"{'Blocked' if blocked else 'Unblocked'} {user_id}.")
+        if target.lstrip("-").isdigit():
+            return int(target)
+        known = await self._users.find_by_username(target)
+        if known is None:
+            await message.reply_text(
+                f"Unknown user {target}. Only users the bot has already seen can be "
+                "referenced by username; use their numeric id otherwise."
+            )
+            return None
+        return known.user_id
 
     # --- helpers ------------------------------------------------------
 
@@ -169,11 +209,20 @@ class BotHandlers:
         message, user = update.message, update.effective_user
         if message is None or user is None:
             return
-        if attempt != self._access_password:
-            logger.warning("Wrong password attempt from %s", user.id)
-            await message.reply_text(WRONG_PASSWORD_TEXT)
+        if await self._is_locked_out(user.id):
+            await message.reply_text(LOCKOUT_TEXT)
+            return
+        if not hmac.compare_digest(attempt, self._access_password):
+            attempts = await self._users.record_failed_attempt(user.id, user.username or "")
+            logger.warning("Wrong password attempt %d from %s", attempts, user.id)
+            left = MAX_PASSWORD_ATTEMPTS - attempts
+            await message.reply_text(
+                LOCKOUT_TEXT if left <= 0 else f"{WRONG_PASSWORD_TEXT} {left} attempt(s) left."
+            )
             await self._notify_admins(
-                context, f"\u26a0\ufe0f Wrong password attempt by {_user_label(user)}."
+                context,
+                f"\u26a0\ufe0f Wrong password attempt {attempts}/{MAX_PASSWORD_ATTEMPTS} by "
+                f"{_user_label(user)}, they tried: {_preview(attempt)}",
             )
             return
 
@@ -187,7 +236,14 @@ class BotHandlers:
         if user_id in self._admin_user_ids or user_id in self._allowed_user_ids:
             return True
         known = await self._users.get(user_id)
-        return known is not None and not known.blocked
+        return known is not None and known.authorized and not known.blocked
+
+    async def _is_locked_out(self, user_id: int) -> bool:
+        known = await self._users.get(user_id)
+        return known is not None and known.failed_attempts >= MAX_PASSWORD_ATTEMPTS
+
+    async def _locked_text(self, user_id: int) -> str:
+        return LOCKOUT_TEXT if await self._is_locked_out(user_id) else LOCKED_TEXT
 
     async def _is_blocked(self, user_id: int) -> bool:
         known = await self._users.get(user_id)
@@ -203,7 +259,7 @@ class BotHandlers:
         if message is not None:
             blocked = await self._is_blocked(user.id)
             if not blocked:
-                await message.reply_text(LOCKED_TEXT)
+                await message.reply_text(await self._locked_text(user.id))
             else:
                 logger.warning("Ignored request from blocked user %d", user.id)
         return False
@@ -222,6 +278,10 @@ class BotHandlers:
                 await context.bot.send_message(chat_id=admin_id, text=text)
             except Exception:
                 logger.exception("Failed to notify admin %d", admin_id)
+
+
+def _preview(attempt: str) -> str:
+    return repr(" ".join(attempt.split())[:ATTEMPT_PREVIEW_LIMIT])
 
 
 def _user_label(user: object) -> str:
