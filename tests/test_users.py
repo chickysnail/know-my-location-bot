@@ -59,6 +59,36 @@ async def test_block_and_unblock(users: UserStore) -> None:
     assert user.username == "alice"
 
 
+async def test_unblocking_unknown_user_does_not_authorize(users: UserStore) -> None:
+    await users.set_blocked(999, False)
+    user = await users.get(999)
+    assert user is not None
+    assert user.blocked is False
+    assert user.authorized is False
+
+
+async def test_failed_attempts_are_counted_and_reset(users: UserStore) -> None:
+    assert await users.record_failed_attempt(5, "eve") == 1
+    assert await users.record_failed_attempt(5, "eve") == 2
+    user = await users.get(5)
+    assert user is not None
+    assert user.authorized is False
+    assert user.failed_attempts == 2
+
+    await users.reset_failed_attempts(5)
+    user = await users.get(5)
+    assert user is not None and user.failed_attempts == 0
+
+
+async def test_authorize_clears_failed_attempts(users: UserStore) -> None:
+    await users.record_failed_attempt(5, "eve")
+    await users.authorize(5, "eve")
+    user = await users.get(5)
+    assert user is not None
+    assert user.authorized is True
+    assert user.failed_attempts == 0
+
+
 async def test_block_unknown_user_id(users: UserStore) -> None:
     await users.set_blocked(999, True)
     user = await users.get(999)

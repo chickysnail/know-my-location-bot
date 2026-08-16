@@ -9,6 +9,11 @@ logger = logging.getLogger(__name__)
 
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S UTC"
 
+USER_COLUMNS = (
+    "user_id, username, authorized_at, last_request_at, request_count, "
+    "blocked, authorized, failed_attempts"
+)
+
 
 @dataclass(frozen=True)
 class AuthorizedUser:
@@ -18,6 +23,8 @@ class AuthorizedUser:
     last_request_at: str
     request_count: int
     blocked: bool
+    authorized: bool = False
+    failed_attempts: int = 0
 
     @property
     def label(self) -> str:
@@ -25,7 +32,11 @@ class AuthorizedUser:
 
 
 class UserStore:
-    """Async SQLite store of users who unlocked the bot with the password."""
+    """Async SQLite store of everyone who has talked to the bot.
+
+    A row means "seen", not "allowed": wrong password attempts and blocks create
+    rows too, so access is decided by the `authorized` flag alone.
+    """
 
     def __init__(self, db_path: str) -> None:
         self._db_path = db_path
@@ -40,10 +51,26 @@ class UserStore:
                 authorized_at TEXT,
                 last_request_at TEXT,
                 request_count INTEGER DEFAULT 0,
-                blocked INTEGER DEFAULT 0
+                blocked INTEGER DEFAULT 0,
+                authorized INTEGER DEFAULT 0,
+                failed_attempts INTEGER DEFAULT 0
             )
         """)
+        await self._migrate_access_columns()
         await self._db.commit()
+
+    async def _migrate_access_columns(self) -> None:
+        assert self._db is not None
+        async with self._db.execute("PRAGMA table_info(users)") as cursor:
+            columns = {str(row[1]) for row in await cursor.fetchall()}
+        if "failed_attempts" not in columns:
+            await self._db.execute(
+                "ALTER TABLE users ADD COLUMN failed_attempts INTEGER DEFAULT 0"
+            )
+        if "authorized" not in columns:
+            await self._db.execute("ALTER TABLE users ADD COLUMN authorized INTEGER DEFAULT 0")
+            # Before this column existed, any unblocked row granted access; keep it.
+            await self._db.execute("UPDATE users SET authorized = 1 WHERE blocked = 0")
 
     async def close(self) -> None:
         if self._db:
@@ -54,9 +81,16 @@ class UserStore:
         db = self._require_db()
         await db.execute(
             """
-            INSERT INTO users (user_id, username, authorized_at, last_request_at, request_count)
-            VALUES (?, ?, ?, ?, 0)
-            ON CONFLICT(user_id) DO UPDATE SET username = excluded.username
+            INSERT INTO users (
+                user_id, username, authorized_at, last_request_at, request_count,
+                blocked, authorized, failed_attempts
+            )
+            VALUES (?, ?, ?, ?, 0, 0, 1, 0)
+            ON CONFLICT(user_id) DO UPDATE SET
+                username = excluded.username,
+                authorized = 1,
+                blocked = 0,
+                failed_attempts = 0
             """,
             (user_id, username, _utc_now(), _utc_now()),
         )
@@ -65,8 +99,7 @@ class UserStore:
     async def get(self, user_id: int) -> AuthorizedUser | None:
         db = self._require_db()
         async with db.execute(
-            "SELECT user_id, username, authorized_at, last_request_at, request_count, blocked "
-            "FROM users WHERE user_id = ?",
+            f"SELECT {USER_COLUMNS} FROM users WHERE user_id = ?",
             (user_id,),
         ) as cursor:
             row = await cursor.fetchone()
@@ -75,8 +108,7 @@ class UserStore:
     async def list_users(self) -> list[AuthorizedUser]:
         db = self._require_db()
         async with db.execute(
-            "SELECT user_id, username, authorized_at, last_request_at, request_count, blocked "
-            "FROM users ORDER BY blocked, last_request_at DESC"
+            f"SELECT {USER_COLUMNS} FROM users ORDER BY blocked, last_request_at DESC"
         ) as cursor:
             rows = await cursor.fetchall()
         return [_to_user(row) for row in rows]
@@ -91,22 +123,52 @@ class UserStore:
         await db.commit()
 
     async def set_blocked(self, user_id: int, blocked: bool) -> None:
+        """Block or unblock a user; unblocking alone never grants access."""
         db = self._require_db()
         await db.execute(
             """
-            INSERT INTO users (user_id, username, authorized_at, last_request_at, blocked)
-            VALUES (?, '', ?, ?, ?)
+            INSERT INTO users (
+                user_id, username, authorized_at, last_request_at, blocked, authorized
+            )
+            VALUES (?, '', ?, ?, ?, 0)
             ON CONFLICT(user_id) DO UPDATE SET blocked = excluded.blocked
             """,
             (user_id, _utc_now(), _utc_now(), int(blocked)),
         )
         await db.commit()
 
+    async def record_failed_attempt(self, user_id: int, username: str) -> int:
+        """Count a wrong password attempt and return this user's new total."""
+        db = self._require_db()
+        await db.execute(
+            """
+            INSERT INTO users (
+                user_id, username, authorized_at, last_request_at, request_count,
+                blocked, authorized, failed_attempts
+            )
+            VALUES (?, ?, '', ?, 0, 0, 0, 1)
+            ON CONFLICT(user_id) DO UPDATE SET
+                username = excluded.username,
+                failed_attempts = failed_attempts + 1
+            """,
+            (user_id, username, _utc_now()),
+        )
+        await db.commit()
+        async with db.execute(
+            "SELECT failed_attempts FROM users WHERE user_id = ?", (user_id,)
+        ) as cursor:
+            row = await cursor.fetchone()
+        return int(str(row[0])) if row is not None else 0
+
+    async def reset_failed_attempts(self, user_id: int) -> None:
+        db = self._require_db()
+        await db.execute("UPDATE users SET failed_attempts = 0 WHERE user_id = ?", (user_id,))
+        await db.commit()
+
     async def find_by_username(self, username: str) -> AuthorizedUser | None:
         db = self._require_db()
         async with db.execute(
-            "SELECT user_id, username, authorized_at, last_request_at, request_count, blocked "
-            "FROM users WHERE lower(username) = ?",
+            f"SELECT {USER_COLUMNS} FROM users WHERE lower(username) = ?",
             (username.lstrip("@").lower(),),
         ) as cursor:
             row = await cursor.fetchone()
@@ -119,7 +181,16 @@ class UserStore:
 
 
 def _to_user(row: Sequence[object]) -> AuthorizedUser:
-    user_id, username, authorized_at, last_request_at, request_count, blocked = row
+    (
+        user_id,
+        username,
+        authorized_at,
+        last_request_at,
+        request_count,
+        blocked,
+        authorized,
+        failed_attempts,
+    ) = row
     return AuthorizedUser(
         user_id=int(str(user_id)),
         username=str(username) if username is not None else "",
@@ -127,6 +198,8 @@ def _to_user(row: Sequence[object]) -> AuthorizedUser:
         last_request_at=str(last_request_at) if last_request_at is not None else "",
         request_count=int(str(request_count)) if request_count is not None else 0,
         blocked=bool(blocked),
+        authorized=bool(authorized),
+        failed_attempts=int(str(failed_attempts)) if failed_attempts is not None else 0,
     )
 
 

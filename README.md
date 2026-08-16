@@ -22,20 +22,26 @@ database path all come from environment variables.
 | Anyone | sends `/start <password>` (or just the password as a message); access is remembered |
 | Admins | listed in `ADMIN_USER_IDS`, never need the password |
 
-Every location request — and every wrong password attempt — is reported to the admins
-by DM, including the requester's username, user id and time.
+The bot only answers in private chats, so a group can never see the password or a
+track. After five wrong passwords a user is locked out and told to ask the owner for
+access; an admin then grants it with `/allow`.
+
+Admins get a DM for every `/start`, every location request and every wrong password
+attempt — including the requester's username, user id, the attempt counter and the
+password they tried.
 
 Admin commands:
 
 | Command | Description |
 | --- | --- |
-| `/users` | who has access, request counts, last request |
+| `/users` | who has access (✅), who only tried (❓) or is blocked (🚫), request counts, wrong attempts |
+| `/allow <user_id\|@username>` | grant access without the password, e.g. after a lockout |
 | `/block <user_id\|@username>` | revoke access; blocked users are ignored silently |
-| `/unblock <user_id\|@username>` | restore access |
+| `/unblock <user_id\|@username>` | lift a block and reset the attempt counter (does not grant access on its own — use `/allow`) |
 
-Usernames only work for people who already unlocked the bot (Telegram does not let
-bots look up arbitrary usernames); otherwise use the numeric user id shown by
-`/users` or in the admin notification.
+Usernames only work for people the bot has already seen (Telegram does not let bots
+look up arbitrary usernames); otherwise use the numeric user id shown by `/users` or
+in the admin notification.
 
 ## Accuracy handling
 
@@ -161,4 +167,4 @@ On failure the response body says why, and the reason is logged by the service:
 | `/start <password>` | Unlock the bot |
 | `/where` | Recent locations plus a route link |
 | `/help` | Usage information |
-| `/users`, `/block`, `/unblock` | Admin only |
+| `/users`, `/allow`, `/block`, `/unblock` | Admin only |

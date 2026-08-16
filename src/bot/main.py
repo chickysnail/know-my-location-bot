@@ -39,15 +39,20 @@ def main() -> None:
         history_points=settings.history_points,
     )
 
+    # Private chats only: in a group the password and every /where answer would be
+    # readable by all members, and every group message would count as an attempt.
+    private = filters.ChatType.PRIVATE
+
     application = Application.builder().token(settings.telegram_bot_token).build()
-    application.add_handler(CommandHandler("start", handlers.start))
-    application.add_handler(CommandHandler("help", handlers.help_command))
-    application.add_handler(CommandHandler("where", handlers.where))
-    application.add_handler(CommandHandler("block", handlers.block))
-    application.add_handler(CommandHandler("unblock", handlers.unblock))
-    application.add_handler(CommandHandler("users", handlers.users_command))
+    application.add_handler(CommandHandler("start", handlers.start, filters=private))
+    application.add_handler(CommandHandler("help", handlers.help_command, filters=private))
+    application.add_handler(CommandHandler("where", handlers.where, filters=private))
+    application.add_handler(CommandHandler("block", handlers.block, filters=private))
+    application.add_handler(CommandHandler("unblock", handlers.unblock, filters=private))
+    application.add_handler(CommandHandler("allow", handlers.allow, filters=private))
+    application.add_handler(CommandHandler("users", handlers.users_command, filters=private))
     application.add_handler(
-        MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.handle_password)
+        MessageHandler(private & filters.TEXT & ~filters.COMMAND, handlers.handle_password)
     )
 
     server_runner: web.AppRunner | None = None
