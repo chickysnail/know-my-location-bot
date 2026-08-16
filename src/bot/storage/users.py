@@ -160,11 +160,6 @@ class UserStore:
             row = await cursor.fetchone()
         return int(str(row[0])) if row is not None else 0
 
-    async def reset_failed_attempts(self, user_id: int) -> None:
-        db = self._require_db()
-        await db.execute("UPDATE users SET failed_attempts = 0 WHERE user_id = ?", (user_id,))
-        await db.commit()
-
     async def find_by_username(self, username: str) -> AuthorizedUser | None:
         db = self._require_db()
         async with db.execute(

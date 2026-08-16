@@ -111,28 +111,20 @@ async def test_lockout_after_five_wrong_attempts(handlers: BotHandlers) -> None:
     assert replies(where) == [LOCKOUT_TEXT]
 
 
-async def test_allow_grants_access_after_lockout(handlers: BotHandlers) -> None:
+async def test_unblock_grants_access_after_lockout(handlers: BotHandlers) -> None:
     for _ in range(MAX_PASSWORD_ATTEMPTS):
         await handlers.handle_password(make_update(STRANGER_ID, "eve", text="nope"), make_context())
 
-    await handlers.allow(make_update(ADMIN_ID, "admin"), make_context(str(STRANGER_ID)))
+    context = make_context(str(STRANGER_ID))
+    await handlers.unblock(make_update(ADMIN_ID, "admin"), context)
+    assert context.bot.send_message.await_args.kwargs == {
+        "chat_id": STRANGER_ID,
+        "text": UNLOCKED_TEXT,
+    }
 
     update = make_update(STRANGER_ID, "eve")
     await handlers.help_command(update, make_context())
     assert replies(update) == [HELP_TEXT]
-
-
-async def test_allow_requires_admin(handlers: BotHandlers) -> None:
-    update = make_update(STRANGER_ID, "eve")
-    await handlers.allow(update, make_context("4242"))
-    assert replies(update) == [ADMIN_ONLY_TEXT]
-
-
-async def test_unblocking_a_stranger_does_not_grant_access(handlers: BotHandlers) -> None:
-    await handlers.unblock(make_update(ADMIN_ID, "admin"), make_context(str(STRANGER_ID)))
-    update = make_update(STRANGER_ID, "eve")
-    await handlers.where(update, make_context())
-    assert replies(update) == [LOCKED_TEXT]
 
 
 async def test_correct_password_grants_access(

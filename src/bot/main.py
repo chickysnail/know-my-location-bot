@@ -49,7 +49,6 @@ def main() -> None:
     application.add_handler(CommandHandler("where", handlers.where, filters=private))
     application.add_handler(CommandHandler("block", handlers.block, filters=private))
     application.add_handler(CommandHandler("unblock", handlers.unblock, filters=private))
-    application.add_handler(CommandHandler("allow", handlers.allow, filters=private))
     application.add_handler(CommandHandler("users", handlers.users_command, filters=private))
     application.add_handler(
         MessageHandler(private & filters.TEXT & ~filters.COMMAND, handlers.handle_password)

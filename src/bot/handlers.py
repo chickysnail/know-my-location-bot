@@ -26,7 +26,6 @@ LOCKOUT_TEXT = (
 ADMIN_ONLY_TEXT = "Admins only."
 USAGE_BLOCK_TEXT = "Usage: /block <user_id|@username>"
 USAGE_UNBLOCK_TEXT = "Usage: /unblock <user_id|@username>"
-USAGE_ALLOW_TEXT = "Usage: /allow <user_id|@username>"
 NO_USERS_TEXT = "Nobody has unlocked the bot yet."
 
 # Wrong password attempts a user gets before they have to ask the owner directly.
@@ -126,23 +125,6 @@ class BotHandlers:
     async def unblock(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await self._set_blocked(update, context, blocked=False, usage=USAGE_UNBLOCK_TEXT)
 
-    async def allow(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Grant access to somebody who locked themselves out or never had the password."""
-        message = update.message
-        if message is None or not await self._require_admin(update):
-            return
-        target = await self._resolve_target(update, context, USAGE_ALLOW_TEXT)
-        if target is None:
-            return
-
-        known = await self._users.get(target)
-        await self._users.authorize(target, known.username if known else "")
-        await message.reply_text(f"Access granted to {target}.")
-        try:
-            await context.bot.send_message(chat_id=target, text=UNLOCKED_TEXT)
-        except Exception:
-            logger.info("Could not tell %d about the granted access", target)
-
     async def users_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         message = update.message
         if message is None or not await self._require_admin(update):
@@ -175,10 +157,19 @@ class BotHandlers:
         if user_id is None:
             return
 
-        await self._users.set_blocked(user_id, blocked)
-        if not blocked:
-            await self._users.reset_failed_attempts(user_id)
-        await message.reply_text(f"{'Blocked' if blocked else 'Unblocked'} {user_id}.")
+        if blocked:
+            await self._users.set_blocked(user_id, True)
+            await message.reply_text(f"Blocked {user_id}.")
+            return
+
+        # Unblocking is how an admin hands out access: it also clears a lockout.
+        known = await self._users.get(user_id)
+        await self._users.authorize(user_id, known.username if known else "")
+        await message.reply_text(f"Unblocked {user_id}, they now have access.")
+        try:
+            await context.bot.send_message(chat_id=user_id, text=UNLOCKED_TEXT)
+        except Exception:
+            logger.info("Could not tell %d about the granted access", user_id)
 
     async def _resolve_target(
         self,
