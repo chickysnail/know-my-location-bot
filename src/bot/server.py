@@ -1,3 +1,4 @@
+import json
 import logging
 
 from aiohttp import web
@@ -7,6 +8,12 @@ from src.bot.storage.locations import LocationStore
 logger = logging.getLogger(__name__)
 
 AUTH_HEADER = "X-Auth-Token"
+PREVIEW_LIMIT = 200
+
+
+def _preview(body: str) -> str:
+    collapsed = " ".join(body.split())
+    return collapsed[:PREVIEW_LIMIT] + ("…" if len(collapsed) > PREVIEW_LIMIT else "")
 
 
 class CoordinateError(ValueError):
@@ -17,13 +24,20 @@ def parse_coordinates(raw: object) -> tuple[float, float]:
     """Parse Tasker's `%gl_coordinates` value ("lat,lon") into floats."""
     if not isinstance(raw, str):
         raise CoordinateError("coordinates must be a string")
-    if "," not in raw:
+    value = raw.strip()
+    if not value:
+        raise CoordinateError("coordinates were empty")
+    if value.startswith("%"):
+        # Tasker sends the variable name verbatim when it has no value yet.
+        raise CoordinateError(f"Tasker variable {value} was not set; run Get Location v2 first")
+    separator = "," if "," in value else " " if " " in value else None
+    if separator is None:
         raise CoordinateError("coordinates must be 'lat,lon'")
-    lat_raw, lon_raw = raw.split(",", 1)
+    lat_raw, lon_raw = value.split(separator, 1)
     try:
         return float(lat_raw.strip()), float(lon_raw.strip())
     except ValueError as exc:
-        raise CoordinateError("coordinates must be numeric") from exc
+        raise CoordinateError(f"coordinates must be numeric, got {value!r}") from exc
 
 
 def parse_accuracy(raw: object) -> float | None:
@@ -51,16 +65,20 @@ def create_app(
             logger.warning("Rejected ingest request with invalid token")
             return web.json_response({"error": "unauthorized"}, status=401)
 
+        body = await request.text()
         try:
-            payload = await request.json()
-        except Exception:
+            payload = json.loads(body)
+        except ValueError:
+            logger.warning("Rejected ingest request with invalid JSON: %s", _preview(body))
             return web.json_response({"error": "invalid json"}, status=400)
         if not isinstance(payload, dict):
+            logger.warning("Rejected ingest request whose JSON is not an object")
             return web.json_response({"error": "invalid json"}, status=400)
 
         try:
             lat, lon = parse_coordinates(payload.get("coordinates"))
         except CoordinateError as exc:
+            logger.warning("Rejected ingest request: %s", exc)
             return web.json_response({"error": str(exc)}, status=400)
 
         accuracy = parse_accuracy(payload.get("accuracy"))

@@ -115,6 +115,10 @@ mypy src/
 
    `PORT` is provided by Railway; the ingest server binds to it.
 
+5. Still under **Settings → Networking**, make sure the generated domain's target
+   port is the one the server listens on (`8080`, or whatever `PORT` is). Railway
+   sometimes guesses a random port, which makes every request return `502`.
+
 Check the deployment with `curl https://<your-domain>/health` → `ok`.
 
 ## Tasker setup
@@ -140,6 +144,15 @@ Create a task that reads the current location and posts it:
 timestamp string, e.g. `yyyy/MM/dd HH:mm`, and is echoed back in the bot's reply).
 
 Trigger the task from a time profile (for example every 15 minutes).
+
+On failure the response body says why, and the reason is logged by the service:
+
+| Response | Cause |
+| --- | --- |
+| `401 unauthorized` | `X-Auth-Token` does not match `INGEST_TOKEN` |
+| `400 Tasker variable %gl_coordinates was not set` | **Get Location v2** did not run before the HTTP Request, or timed out |
+| `400 coordinates must be numeric` | the body reached the server with a non-coordinate value |
+| `{"status": "discarded"}` | the fix was worse than `MAX_ACCURACY_M` |
 
 ## Telegram commands
 

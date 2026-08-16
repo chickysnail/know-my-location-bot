@@ -101,6 +101,15 @@ def test_parse_coordinates_rejects_extra_components() -> None:
         parse_coordinates("1.0,2.0,3.0")
 
 
+def test_parse_coordinates_accepts_space_separator() -> None:
+    assert parse_coordinates("55.75 37.61") == (55.75, 37.61)
+
+
+def test_parse_coordinates_flags_unset_tasker_variable() -> None:
+    with pytest.raises(CoordinateError, match="was not set"):
+        parse_coordinates("%gl_coordinates")
+
+
 @pytest.mark.parametrize("raw", ["", "1.0", None, 42, "a,b"])
 def test_parse_coordinates_rejects_invalid(raw: object) -> None:
     with pytest.raises(CoordinateError):
